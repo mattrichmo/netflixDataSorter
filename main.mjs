@@ -27,9 +27,9 @@ const getLastScrapedIndex = (filePath) => {
 };
 
 // Function to get IMDb info for a given query, index, and last scraped index
-const getIMDBinfo = async (query, index, lastScrapedIndex, data) => {
+const getIMDBinfo = async (query, index, lastScrapedIndex, data, scrapedIndicesSet) => {
     try {
-        if (index <= lastScrapedIndex) {
+        if (index <= lastScrapedIndex || scrapedIndicesSet.has(index)) {
             console.log(chalk.gray(`Skipping row ${index + 1} as it was already scraped.`));
             return null;
         }
@@ -75,6 +75,9 @@ const getIMDBinfo = async (query, index, lastScrapedIndex, data) => {
                     // Log IMDb information including the returned type
                     console.log(chalk.dim(`Title:`), chalk.cyan(title), chalk.dim(`Type:`), chalk.blue(type), chalk.dim(`Release Date:`), chalk.green(releaseDate), chalk.dim(`Stars:`), chalk.magenta(starNames));
                     console.log(`Returned Type: ${type}\n`);
+
+                    // Add the index to the set of scraped indices
+                    scrapedIndicesSet.add(index);
                 } else {
                     const firstResult = results.first();
                     const firstType = $(firstResult).find('li:nth-of-type(2) span').text();
@@ -148,6 +151,9 @@ const processNetflixData = async () => {
         const errorDataStream = fs.createWriteStream(errorFilePath, { flags: 'a' });
         const scrapedManifestStream = fs.createWriteStream(scrapedManifestFilePath, { flags: 'a' });
 
+        // Set to store scraped indices
+        const scrapedIndicesSet = new Set();
+
         // Array to store IMDb information for each processed row
         const imdbInfoArray = [];
 
@@ -174,7 +180,7 @@ const processNetflixData = async () => {
                         try {
                             const jsonData = JSON.parse(data);
                             const imdbQuery = encodeURIComponent(jsonData.netflixData.searchTerm.replace(/\s+/g, ' '));
-                            const imdbInfo = await getIMDBinfo(imdbQuery, i + j, lastScrapedIndex, data);
+                            const imdbInfo = await getIMDBinfo(imdbQuery, i + j, lastScrapedIndex, data, scrapedIndicesSet);
 
                             // Store IMDb information in the array
                             if (imdbInfo) {
@@ -236,4 +242,3 @@ const processNetflixData = async () => {
 
 // Run the processNetflixData function
 processNetflixData();
-

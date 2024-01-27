@@ -2,6 +2,35 @@ import fs from 'fs';
 import csv from 'csv-parser';
 import { v4 as uuidv4 } from 'uuid';
 
+// Function to organize objects based on coreTitle
+const organizeObjects = (parsedObjects) => {
+    const organizedObjects = [];
+
+    parsedObjects.forEach((item) => {
+        const existingItem = organizedObjects.find((existing) => existing.coreTitle === item.netflixData.coreTitle);
+
+        if (existingItem) {
+            // Matching coreTitle found, add the item as a child
+            existingItem.relationships.children.push(item.netflixData);
+        } else {
+            // No matching coreTitle, add the item as a top-level object
+            organizedObjects.push({
+                coreTitle: item.netflixData.coreTitle,
+                imdbData: null,
+                meta: {
+                    numItem: 0, // Rename numSeason to numItem
+                    totalHoursViewed: 0,
+                },
+                relationships: {
+                    children: [item.netflixData],
+                },
+            });
+        }
+    });
+
+    return organizedObjects;
+};
+
 // Function to parse CSV row into JSON object
 const parseCSVRow = (row, index) => {
     const title = row.Title || ''; // Ensure that title is not undefined
@@ -70,12 +99,28 @@ fs.createReadStream('./data/raw/netflixData.csv')
         // Establish relationships between items with matching coreTitle
         createRelationships(results);
 
-        // Stream the JSON Lines data to a new file
-        const jsonlStream = fs.createWriteStream('./data/cleaned/netflixCleanedData.jsonl');
-        results.forEach((item) => {
-            jsonlStream.write(JSON.stringify(item) + '\n');
+        // Organize objects based on coreTitle
+        const organizedResults = organizeObjects(results);
+
+        // Calculate total hours viewed and numItem for each organized object
+        organizedResults.forEach((item) => {
+            item.meta.totalHoursViewed = item.relationships.children.reduce((total, child) => total + child.hoursViewed, 0);
+            item.meta.numItem = item.relationships.children.length;
         });
-        jsonlStream.end();
+
+        // Stream the JSON Lines data to a new file (organized data)
+        const organizedJsonlStream = fs.createWriteStream('./data/cleaned/organizedNetflixData.jsonl');
+        organizedResults.forEach((item) => {
+            organizedJsonlStream.write(JSON.stringify(item) + '\n');
+        });
+        organizedJsonlStream.end();
+
+        // Stream the JSON Lines data to another file (cleaned data)
+        const cleanedJsonlStream = fs.createWriteStream('./data/cleaned/netflixCleanedData.jsonl');
+        results.forEach((item) => {
+            cleanedJsonlStream.write(JSON.stringify(item) + '\n');
+        });
+        cleanedJsonlStream.end();
 
         console.log('Processing complete.');
     });
