@@ -37,39 +37,58 @@ const getIMDBinfo = async (query, index, lastScrapedIndex) => {
             return null;
         }
 
-        console.log(chalk.cyan(`Fetching IMDb info for row ${index + 1} - Query: ${query}`));
+        console.log(chalk.dim(`\nFetching IMDb info for row ${index + 1} - Query:`), chalk.cyan(`${query}`));
 
         const headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         };
 
-        // Send a query to IMDb using Cheerio
-        const imdbPage = await axios.get(`https://www.imdb.com/find/?q=${query}`, { headers, timeout: 10000 });
-        const $ = cheerio.load(imdbPage.data);
+        let retryCount = 0;
+        let imdbInfo = null;
 
-        // Select the first result from the array under the "results" selector
-        const firstResult = $('[data-testid="find-results-section-title"] div.sc-17bafbdb-2 li.ipc-metadata-list-summary-item').first();
+        while (retryCount < 2) {
+            try {
+                // Send a query to IMDb using Cheerio
+                const imdbPage = await axios.get(`https://www.imdb.com/find/?q=${query}`, { headers, timeout: 10000 });
+                const $ = cheerio.load(imdbPage.data);
 
-        // Extracting information based on provided selectors
-        const imdbLink = `https://www.imdb.com${firstResult.find('a').attr('href').split('?')[0]}`;
-        const title = firstResult.find('a').text();
-        const type = firstResult.find('li:nth-of-type(2) span').text();
-        const releaseDate = firstResult.find('.ipc-metadata-list-summary-item__tl li:nth-of-type(1) span').text();
+                // Select the first result from the array under the "results" selector
+                const firstResult = $('[data-testid="find-results-section-title"] div.sc-17bafbdb-2 li.ipc-metadata-list-summary-item').first();
 
-        // Extracting stars as an array of objects (splitting by comma)
-        const starNames = firstResult.find('.ipc-metadata-list-summary-item__stl span').text();
-        const stars = starNames.split(',').map(star => ({ starName: star.trim() }));
+                // Extracting information based on provided selectors
+                const imdbLink = `https://www.imdb.com${firstResult.find('a').attr('href').split('?')[0]}`;
+                const title = firstResult.find('a').text();
+                const type = firstResult.find('li:nth-of-type(2) span').text();
+                const releaseDate = firstResult.find('.ipc-metadata-list-summary-item__tl li:nth-of-type(1) span').text();
 
-        // Creating the IMDb info object
-        const imdbInfo = {
-            imdbLink,
-            title,
-            type,
-            releaseDate,
-            stars,
-        };
+                // Extracting stars as an array of objects (splitting by comma)
+                const starNames = firstResult.find('.ipc-metadata-list-summary-item__stl span').text();
+                const stars = starNames.split(',').map(star => ({ starName: star.trim() }));
 
-        console.log(chalk.dim(`Title:`),chalk.cyan(title),chalk.dim(`Type:`),chalk.blue(type),chalk.dim(`Release Date:`),chalk.green(releaseDate),chalk.dim(`Stars:`),chalk.magenta(starNames));
+                // Creating the IMDb info object
+                imdbInfo = {
+                    imdbLink,
+                    title,
+                    type,
+                    releaseDate,
+                    stars,
+                };
+                console.log(chalk.dim(`Title:`), chalk.cyan(title), chalk.dim(`Type:`), chalk.blue(type), chalk.dim(`Release Date:`), chalk.green(releaseDate), chalk.dim(`Stars:`), chalk.magenta(starNames));
+                console.log(`\n`)
+                break; // Break out of the retry loop if successful
+            } catch (error) {
+                console.error(chalk.yellow(`Retry ${retryCount + 1} failed for row ${index + 1} - Query: ${query}`), error);
+                retryCount++;
+            }
+        }
+
+        if (!imdbInfo) {
+            console.error(chalk.red(`Error fetching IMDb info for row ${index + 1} - Query: ${query}`));
+
+            // Save the error information to an error JSONL file
+            fs.appendFileSync('errorData.jsonl', JSON.stringify({ error: 'Max retries reached', query, index }) + '\n');
+        }
+
         return imdbInfo;
     } catch (error) {
         console.error(chalk.red(`Error fetching IMDb info for row ${index + 1} - Query: ${query}`), error);
@@ -81,7 +100,8 @@ const getIMDBinfo = async (query, index, lastScrapedIndex) => {
     }
 };
 
-// Function to process Netflix data and make IMDb API calls in batches
+
+// Function to process Netflix data and make IMDb API calls sequentially
 const processNetflixData = async () => {
     try {
         const filePath = 'data/cleaned/netflixCleanedData.json';
@@ -93,48 +113,40 @@ const processNetflixData = async () => {
         const netflixData = JSON.parse(rawData);
         const lastScrapedIndex = getLastScrapedIndex(outputFilePath, netflixData);
 
-        // Process in batches of 10 items
-        const batchSize = 10;
-        const totalItems = netflixData.length;
+        let currentIndex = lastScrapedIndex;
 
-        for (let batchStart = lastScrapedIndex; batchStart < totalItems; batchStart += batchSize) {
-            const batchEnd = Math.min(batchStart + batchSize, totalItems);
+        // Create a set to store unique items based on the cleanTitle
+        const uniqueItemsSet = new Set();
 
-            const batchPromises = [];
+        while (currentIndex < netflixData.length) {
+            const netflixItem = netflixData[currentIndex].netflixData;
+            const cleanTitle = netflixItem.cleanTitle.split('//')[0].trim();
 
-            for (let i = batchStart; i < batchEnd; i++) {
-                const netflixItem = netflixData[i].netflixData;
+            // Check if the cleanTitle is already in the set (indicating a duplicate)
+            if (!uniqueItemsSet.has(cleanTitle)) {
+                uniqueItemsSet.add(cleanTitle);
 
-                // Extract the cleanTitle from the sitemap results and clean it
-                const cleanTitle = netflixItem.cleanTitle.split('//')[0].trim();
+                // Get IMDb info for the current item
+                const imdbInfo = await getIMDBinfo(cleanTitle, currentIndex, lastScrapedIndex);
 
-                // Generate indexNum and titleUUID
-                const indexNum = i + 1; // Assuming indexNum starts from 1
-                const titleUUID = uuidv4();
-
-                const imdbPromise = getIMDBinfo(cleanTitle, i, lastScrapedIndex);
-                batchPromises.push(imdbPromise);
-            }
-
-            // Wait for all promises in the batch to complete
-            const batchResults = await Promise.all(batchPromises);
-
-            // Append each item to the JSONL file
-            for (let i = 0; i < batchResults.length; i++) {
-                const imdbInfo = batchResults[i];
                 if (imdbInfo) {
-                    const currentIndex = batchStart + i;
-
                     // Add indexNum and titleUUID to the netflixItem
                     netflixData[currentIndex].netflixData.indexNum = currentIndex + 1;
                     netflixData[currentIndex].netflixData.titleUUID = uuidv4();
 
                     netflixData[currentIndex].netflixData.imdbInfo = imdbInfo;
+
+                    // Append the item to the JSONL file
                     fs.appendFileSync(outputFilePath, JSON.stringify({ netflixData: netflixData[currentIndex].netflixData }) + '\n');
                 }
+            } else {
+                console.log(chalk.gray(`Skipping duplicate item for row ${currentIndex + 1} with cleanTitle: ${cleanTitle}`));
             }
 
-            // Wait for a moment before processing the next batch
+            // Move to the next item
+            currentIndex++;
+
+            // Wait for a moment before processing the next item
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
     } catch (error) {
@@ -142,5 +154,7 @@ const processNetflixData = async () => {
     }
 };
 
-// Call the function to process Netflix data and make IMDb API calls
+// Call the function to process Netflix data and make IMDb API calls sequentially
 processNetflixData();
+
+
