@@ -1,36 +1,33 @@
 import fs from 'fs';
 import axios from 'axios';
 import cheerio from 'cheerio';
-import { v4 as uuidv4 } from 'uuid';
 import chalk from 'chalk';
 
-// Function to get the last scraped index from the JSONL file
-const getLastScrapedIndex = (filePath, netflixData) => {
+// Function to read the last scraped index from the manifest
+const getLastScrapedIndex = (filePath) => {
+    const scrapedManifestFilePath = 'scrapedManifest.jsonl';
+
     try {
-        if (!fs.existsSync(filePath)) {
-            return 0; // If the file doesn't exist, start from the beginning
+        if (!fs.existsSync(scrapedManifestFilePath)) {
+            return 0;
         }
 
-        const lines = fs.readFileSync(filePath, 'utf-8').trim().split('\n');
-        if (lines.length > 0) {
-            const lastLine = JSON.parse(lines[lines.length - 1]);
-            if (lastLine && lastLine.netflixData && lastLine.netflixData.rawTitle) {
-                const lastScrapedRawTitle = lastLine.netflixData.rawTitle;
+        const manifestLines = fs.readFileSync(scrapedManifestFilePath, 'utf-8').split('\n').filter(line => line.trim() !== '');
 
-                // Find the index of the last scraped rawTitle in the netflixData array
-                const index = netflixData.findIndex(item => item.netflixData.rawTitle === lastScrapedRawTitle);
-
-                return index !== -1 ? index : 0; // If not found, start from the beginning
-            }
+        if (manifestLines.length === 0) {
+            return 0;
         }
+
+        const lastManifestLine = JSON.parse(manifestLines[manifestLines.length - 1]);
+        return lastManifestLine.index;
     } catch (error) {
-        console.error('Error getting last scraped index:', error);
+        console.error(chalk.red(`Error reading last scraped index from manifest`), error);
+        return -1;
     }
-    return 0;
 };
 
-// Function to get IMDb info and set it under each contentData item
-const getIMDBinfo = async (query, index, lastScrapedIndex) => {
+// Function to get IMDb info for a given query, index, and last scraped index
+const getIMDBinfo = async (query, index, lastScrapedIndex, data) => {
     try {
         if (index <= lastScrapedIndex) {
             console.log(chalk.gray(`Skipping row ${index + 1} as it was already scraped.`));
@@ -48,113 +45,195 @@ const getIMDBinfo = async (query, index, lastScrapedIndex) => {
 
         while (retryCount < 2) {
             try {
-                // Send a query to IMDb using Cheerio
                 const imdbPage = await axios.get(`https://www.imdb.com/find/?q=${query}`, { headers, timeout: 10000 });
                 const $ = cheerio.load(imdbPage.data);
 
-                // Select the first result from the array under the "results" selector
-                const firstResult = $('[data-testid="find-results-section-title"] div.sc-17bafbdb-2 li.ipc-metadata-list-summary-item').first();
+                // Extract IMDb information from the page
+                const results = $('[data-testid="find-results-section-title"] div.sc-17bafbdb-2 li.ipc-metadata-list-summary-item');
+                const validResult = results.toArray().find(result => {
+                    const type = $(result).find('li:nth-of-type(2) span').text();
+                    return !type.includes('Podcast');
+                });
 
-                // Extracting information based on provided selectors
-                const imdbLink = `https://www.imdb.com${firstResult.find('a').attr('href').split('?')[0]}`;
-                const title = firstResult.find('a').text();
-                const type = firstResult.find('li:nth-of-type(2) span').text();
-                const releaseDate = firstResult.find('.ipc-metadata-list-summary-item__tl li:nth-of-type(1) span').text();
+                if (validResult) {
+                    // Extract IMDb information from the valid result
+                    const imdbLink = `https://www.imdb.com${$(validResult).find('a').attr('href').split('?')[0]}`;
+                    const title = $(validResult).find('a').text();
+                    const type = $(validResult).find('li:nth-of-type(2) span').text();
+                    const releaseDate = $(validResult).find('.ipc-metadata-list-summary-item__tl li:nth-of-type(1) span').text();
+                    const starNames = $(validResult).find('.ipc-metadata-list-summary-item__stl span').text();
+                    const stars = starNames.split(',').map(star => ({ starName: star.trim() }));
 
-                // Extracting stars as an array of objects (splitting by comma)
-                const starNames = firstResult.find('.ipc-metadata-list-summary-item__stl span').text();
-                const stars = starNames.split(',').map(star => ({ starName: star.trim() }));
+                    imdbInfo = {
+                        imdbLink,
+                        title,
+                        type,
+                        releaseDate,
+                        stars,
+                    };
 
-                // Creating the IMDb info object
-                imdbInfo = {
-                    imdbLink,
-                    title,
-                    type,
-                    releaseDate,
-                    stars,
-                };
-                console.log(chalk.dim(`Title:`), chalk.cyan(title), chalk.dim(`Type:`), chalk.blue(type), chalk.dim(`Release Date:`), chalk.green(releaseDate), chalk.dim(`Stars:`), chalk.magenta(starNames));
-                console.log(`\n`)
-                break; // Break out of the retry loop if successful
+                    // Log IMDb information including the returned type
+                    console.log(chalk.dim(`Title:`), chalk.cyan(title), chalk.dim(`Type:`), chalk.blue(type), chalk.dim(`Release Date:`), chalk.green(releaseDate), chalk.dim(`Stars:`), chalk.magenta(starNames));
+                    console.log(`Returned Type: ${type}\n`);
+                } else {
+                    const firstResult = results.first();
+                    const firstType = $(firstResult).find('li:nth-of-type(2) span').text();
+                    console.log(chalk.red(`No valid result found excluding 'Podcast'.`));
+                    console.log(`First Result Type: ${firstType}\n`);
+                    const errorObject = {
+                        error: 'No valid result found excluding "Podcast"',
+                        query,
+                        index,
+                        originalData: JSON.parse(data),
+                    };
+                    fs.appendFileSync('errorData.jsonl', JSON.stringify(errorObject) + '\n');
+                    return null; // Return null to signify no valid result
+                }
+
+                break;
             } catch (error) {
+                // Retry on failure
                 console.error(chalk.yellow(`Retry ${retryCount + 1} failed for row ${index + 1} - Query: ${query}`), error);
                 retryCount++;
             }
         }
 
         if (!imdbInfo) {
+            // Log error if no valid result is found
             console.error(chalk.red(`Error fetching IMDb info for row ${index + 1} - Query: ${query}`));
 
-            // Save the error information to an error JSONL file
-            fs.appendFileSync('errorData.jsonl', JSON.stringify({ error: 'Max retries reached', query, index }) + '\n');
+            const errorObject = {
+                error: 'Max retries reached or no valid result found',
+                query,
+                index,
+                originalData: JSON.parse(data),
+            };
+            fs.appendFileSync('errorData.jsonl', JSON.stringify(errorObject) + '\n');
         }
 
         return imdbInfo;
     } catch (error) {
+        // Log error if there's an exception
         console.error(chalk.red(`Error fetching IMDb info for row ${index + 1} - Query: ${query}`), error);
 
-        // Save the error information to an error JSONL file
-        fs.appendFileSync('errorData.jsonl', JSON.stringify({ error, query, index }) + '\n');
-
+        const errorObject = {
+            error,
+            query,
+            index,
+            originalData: JSON.parse(data),
+        };
+        fs.appendFileSync('errorData.jsonl', JSON.stringify(errorObject) + '\n');
         return null;
     }
 };
 
-
-// Function to process Netflix data and make IMDb API calls sequentially
+// Function to process Netflix data
 const processNetflixData = async () => {
     try {
-        const filePath = 'data/cleaned/netflixCleanedData.json';
-        const outputFilePath = 'data/cleaned/imdbData.jsonl';
+        // File paths
+        const cleanedDataFilePath = 'data/cleaned/netflixCleanedData.jsonl';
+        const imdbDataFilePath = 'data/cleaned/imdbData.jsonl';
         const errorFilePath = 'errorData.jsonl';
+        const scrapedManifestFilePath = 'scrapedManifest.jsonl';
 
-        // Read the last scraped index from the JSONL file
-        const rawData = fs.readFileSync(filePath);
-        const netflixData = JSON.parse(rawData);
-        const lastScrapedIndex = getLastScrapedIndex(outputFilePath, netflixData);
+        // Read the last scraped index from the manifest
+        const lastScrapedIndex = getLastScrapedIndex(imdbDataFilePath);
 
-        let currentIndex = lastScrapedIndex;
+        // Read cleaned data from the file
+        const cleanedDataLines = fs.existsSync(cleanedDataFilePath) ? fs.readFileSync(cleanedDataFilePath, 'utf-8').split('\n') : [];
+        const cleanedDataObjects = cleanedDataLines.map(line => line.trim()).filter(Boolean);
 
-        // Create a set to store unique items based on the cleanTitle
-        const uniqueItemsSet = new Set();
+        // Create write streams for IMDb data, error data, and scraped manifest
+        const imdbDataStream = fs.createWriteStream(imdbDataFilePath, { flags: 'a' });
+        const errorDataStream = fs.createWriteStream(errorFilePath, { flags: 'a' });
+        const scrapedManifestStream = fs.createWriteStream(scrapedManifestFilePath, { flags: 'a' });
 
-        while (currentIndex < netflixData.length) {
-            const netflixItem = netflixData[currentIndex].netflixData;
-            const cleanTitle = netflixItem.cleanTitle.split('//')[0].trim();
+        // Array to store IMDb information for each processed row
+        const imdbInfoArray = [];
 
-            // Check if the cleanTitle is already in the set (indicating a duplicate)
-            if (!uniqueItemsSet.has(cleanTitle)) {
-                uniqueItemsSet.add(cleanTitle);
+        // Batch processing variables
+        const batchSize = 10;
+        let batchCount = 0;
+        let successfulCount = 0;
+        let erroredCount = 0;
+        let timedOutCount = 0;
 
-                // Get IMDb info for the current item
-                const imdbInfo = await getIMDBinfo(cleanTitle, currentIndex, lastScrapedIndex);
+        // Process each row in the cleaned data
+        for (let i = 0; i < cleanedDataObjects.length; i += batchSize) {
+            // Initialize batch arrays
+            const batchData = cleanedDataObjects.slice(i, i + batchSize);
+            const batchPromises = [];
 
-                if (imdbInfo) {
-                    // Add indexNum and titleUUID to the netflixItem
-                    netflixData[currentIndex].netflixData.indexNum = currentIndex + 1;
-                    netflixData[currentIndex].netflixData.titleUUID = uuidv4();
+            // Process each item in the batch concurrently
+            for (let j = 0; j < batchData.length; j++) {
+                const data = batchData[j];
 
-                    netflixData[currentIndex].netflixData.imdbInfo = imdbInfo;
+                // Ensure the line is not empty before parsing
+                if (data !== '') {
+                    const promise = (async () => {
+                        try {
+                            const jsonData = JSON.parse(data);
+                            const imdbQuery = encodeURIComponent(jsonData.netflixData.searchTerm.replace(/\s+/g, ' '));
+                            const imdbInfo = await getIMDBinfo(imdbQuery, i + j, lastScrapedIndex, data);
 
-                    // Append the item to the JSONL file
-                    fs.appendFileSync(outputFilePath, JSON.stringify({ netflixData: netflixData[currentIndex].netflixData }) + '\n');
+                            // Store IMDb information in the array
+                            if (imdbInfo) {
+                                imdbInfoArray.push({ imdbInfo, searchTerm: jsonData.netflixData.searchTerm, index: i + j });
+
+                                // Write IMDb information to the IMDb data file and scraped manifest
+                                imdbDataStream.write(JSON.stringify({ imdbInfo, searchTerm: jsonData.netflixData.searchTerm, index: i + j }) + '\n');
+                                scrapedManifestStream.write(JSON.stringify({ searchTerm: jsonData.netflixData.searchTerm, index: i + j }) + '\n');
+
+                                // Log processed row
+                                console.log(`Processed row ${i + j + 1} - IMDb info:`, imdbInfo);
+
+                                // Increment successful count
+                                successfulCount++;
+                            }
+                        } catch (parseError) {
+                            // Log error if there's an issue parsing the JSON
+                            console.error(chalk.red(`Error parsing JSON for row ${i + j + 1}`), parseError);
+
+                            // Increment errored count
+                            erroredCount++;
+                        }
+                    })();
+
+                    batchPromises.push(promise);
+                } else {
+                    // Log a warning if the line is empty
+                    console.warn(chalk.yellow(`Warning: Empty line found at row ${i + j + 1}`));
+
+                    // Increment errored count for empty line
+                    erroredCount++;
                 }
-            } else {
-                console.log(chalk.gray(`Skipping duplicate item for row ${currentIndex + 1} with cleanTitle: ${cleanTitle}`));
             }
 
-            // Move to the next item
-            currentIndex++;
+            // Wait for all promises in the batch to complete before moving to the next batch
+            await Promise.allSettled(batchPromises);
 
-            // Wait for a moment before processing the next item
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            // Log batch summary
+            batchCount++;
+            console.log(`Batch ${batchCount} Summary - Successful: ${successfulCount}, Errored: ${erroredCount}, Timed Out: ${timedOutCount}`);
+
+            // Reset counts for the next batch
+            successfulCount = 0;
+            erroredCount = 0;
+            timedOutCount = 0;
         }
+
+        // Close write streams
+        imdbDataStream.end();
+        errorDataStream.end();
+        scrapedManifestStream.end();
+
+        console.log('Processing complete.');
     } catch (error) {
-        console.error(chalk.red('Error processing Netflix data:'), error);
+        // Log error if there's an exception during processing
+        console.error(chalk.red('Error processing Netflix data and making IMDb API calls'), error);
     }
 };
 
-// Call the function to process Netflix data and make IMDb API calls sequentially
+// Run the processNetflixData function
 processNetflixData();
-
 
