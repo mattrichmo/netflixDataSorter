@@ -40,8 +40,9 @@ const parseCSVRow = (row, index) => {
     // Extracting searchTerm
     const searchTerm = title.split('//')[0].trim();
 
-    // Extracting release date
+    // Extracting release date and parsing it as a JavaScript Date object
     const releaseDate = row['Release Date'] || '';
+    const releaseDateParsed = releaseDate ? new Date(releaseDate) : null;
 
     // Creating itemUUID using uuid v4
     const itemUUID = uuidv4();
@@ -55,6 +56,7 @@ const parseCSVRow = (row, index) => {
             coreTitle: coreTitle,
             availableGlobally: availableGloballyBool,
             releaseDate: releaseDate,
+            releaseDateParsed: releaseDateParsed, // Store parsed release date
             hoursViewed: hoursViewed,
             searchTerm: searchTerm,
             itemUUID: itemUUID,

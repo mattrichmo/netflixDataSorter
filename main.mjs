@@ -114,7 +114,7 @@ const getIMDBinfo = async (query, index, lastScrapedIndex, data, scrapedIndicesS
             fs.appendFileSync('errorData.jsonl', JSON.stringify(errorObject) + '\n');
         }
 
-        return imdbInfo;
+        return imdbInfo ? { imdbInfo, coreTitle: JSON.parse(data).coreTitle, index } : null;
     } catch (error) {
         // Log error if there's an exception
         console.error(chalk.red(`Error fetching IMDb info for row ${index + 1} - Query: ${query}`), error);
@@ -130,11 +130,11 @@ const getIMDBinfo = async (query, index, lastScrapedIndex, data, scrapedIndicesS
     }
 };
 
-// Function to process Netflix data
-const processNetflixData = async () => {
+// Function to process organized Netflix data
+const processOrganizedNetflixData = async () => {
     try {
         // File paths
-        const cleanedDataFilePath = 'data/cleaned/netflixCleanedData.jsonl';
+        const organizedDataFilePath = 'data/cleaned/organizedNetflixData.jsonl';
         const imdbDataFilePath = 'data/cleaned/imdbData.jsonl';
         const errorFilePath = 'errorData.jsonl';
         const scrapedManifestFilePath = 'scrapedManifest.jsonl';
@@ -142,9 +142,9 @@ const processNetflixData = async () => {
         // Read the last scraped index from the manifest
         const lastScrapedIndex = getLastScrapedIndex(imdbDataFilePath);
 
-        // Read cleaned data from the file
-        const cleanedDataLines = fs.existsSync(cleanedDataFilePath) ? fs.readFileSync(cleanedDataFilePath, 'utf-8').split('\n') : [];
-        const cleanedDataObjects = cleanedDataLines.map(line => line.trim()).filter(Boolean);
+        // Read organized data from the file
+        const organizedDataLines = fs.existsSync(organizedDataFilePath) ? fs.readFileSync(organizedDataFilePath, 'utf-8').split('\n') : [];
+        const organizedDataObjects = organizedDataLines.map(line => line.trim()).filter(Boolean);
 
         // Create write streams for IMDb data, error data, and scraped manifest
         const imdbDataStream = fs.createWriteStream(imdbDataFilePath, { flags: 'a' });
@@ -164,10 +164,10 @@ const processNetflixData = async () => {
         let erroredCount = 0;
         let timedOutCount = 0;
 
-        // Process each row in the cleaned data
-        for (let i = 0; i < cleanedDataObjects.length; i += batchSize) {
+        // Process each row in the organized data
+        for (let i = 0; i < organizedDataObjects.length; i += batchSize) {
             // Initialize batch arrays
-            const batchData = cleanedDataObjects.slice(i, i + batchSize);
+            const batchData = organizedDataObjects.slice(i, i + batchSize);
             const batchPromises = [];
 
             // Process each item in the batch concurrently
@@ -179,16 +179,17 @@ const processNetflixData = async () => {
                     const promise = (async () => {
                         try {
                             const jsonData = JSON.parse(data);
-                            const imdbQuery = encodeURIComponent(jsonData.netflixData.searchTerm.replace(/\s+/g, ' '));
-                            const imdbInfo = await getIMDBinfo(imdbQuery, i + j, lastScrapedIndex, data, scrapedIndicesSet);
+                            const coreTitle = encodeURIComponent(jsonData.coreTitle.replace(/\s+/g, ' '));
+                            const imdbInfo = await getIMDBinfo(coreTitle, i + j, lastScrapedIndex, data, scrapedIndicesSet);
 
-                            // Store IMDb information in the array
+                            // Modify the original data object to include IMDb information
                             if (imdbInfo) {
-                                imdbInfoArray.push({ imdbInfo, searchTerm: jsonData.netflixData.searchTerm, index: i + j });
+                                const updatedData = { ...jsonData, imdbData: imdbInfo.imdbInfo };
+                                imdbInfoArray.push({ imdbInfo, coreTitle: jsonData.coreTitle, index: i + j });
 
-                                // Write IMDb information to the IMDb data file and scraped manifest
-                                imdbDataStream.write(JSON.stringify({ imdbInfo, searchTerm: jsonData.netflixData.searchTerm, index: i + j }) + '\n');
-                                scrapedManifestStream.write(JSON.stringify({ searchTerm: jsonData.netflixData.searchTerm, index: i + j }) + '\n');
+                                // Write the updated data to the IMDb data file and scraped manifest
+                                imdbDataStream.write(JSON.stringify(updatedData) + '\n');
+                                scrapedManifestStream.write(JSON.stringify({ coreTitle: jsonData.coreTitle, index: i + j }) + '\n');
 
                                 // Log processed row
                                 console.log(`Processed row ${i + j + 1} - IMDb info:`, imdbInfo);
@@ -240,5 +241,5 @@ const processNetflixData = async () => {
     }
 };
 
-// Run the processNetflixData function
-processNetflixData();
+// Run the processOrganizedNetflixData function
+processOrganizedNetflixData();
