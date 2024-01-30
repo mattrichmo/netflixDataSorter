@@ -1,0 +1,23 @@
+{
+  "name": "netflix-data-sorter",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.6.7",
+    "chalk": "^5.3.0",
+    "cheerio": "^1.0.0-rc.12",
+    "crypto": "^1.0.1",
+    "csv-parser": "^3.0.0",
+    "fast-csv": "^5.0.0",
+    "pupeteer": "^0.0.1",
+    "puppeteer": "^21.9.0",
+    "uuid": "^9.0.1"
+  }
+}
