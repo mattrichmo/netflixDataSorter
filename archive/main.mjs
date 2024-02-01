@@ -3,8 +3,7 @@ import axios from 'axios';
 import cheerio from 'cheerio';
 import chalk from 'chalk';
 
-// Function to read the last scraped index from the manifest
-const getLastScrapedIndex = (filePath) => {
+const getLastScrapedIndex = () => {
     const scrapedManifestFilePath = 'scrapedManifest.jsonl';
 
     try {
@@ -25,6 +24,7 @@ const getLastScrapedIndex = (filePath) => {
         return -1;
     }
 };
+
 
 // Function to get IMDb info for a given query, index, and last scraped index
 const getIMDBinfo = async (query, index, lastScrapedIndex, data, scrapedIndicesSet) => {
