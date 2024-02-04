@@ -80,7 +80,7 @@ const parseCSVRow = (row) => {
                 releaseDate: releaseDate,
             }],
             sources: {
-                // Logic to populate sources if required
+                
             }
         }
     };
@@ -129,9 +129,7 @@ const organizeObjects = (parsedObjects) => {
         organizedObjects[coreTitle].data.relationships.push(...item.data.relationships);
     });
 
-    // Calculate total hours viewed and count seasons/items
     Object.values(organizedObjects).forEach(item => {
-        // Sort the relationships array by season number
         item.data.relationships.sort((a, b) => 
             extractSeasonNumber(a.title) - extractSeasonNumber(b.title)
         );
@@ -141,6 +139,7 @@ const organizeObjects = (parsedObjects) => {
 
     return Object.values(organizedObjects);
 };
+
 
 // Function to load CSV data, process, and organize
 const cleanAndSortData = async () => {
@@ -167,16 +166,17 @@ const cleanAndSortData = async () => {
 const saveSortedDataToJsonl = async (dataObjects) => {
     return new Promise((resolve, reject) => {
         const dirPath = '../data/processed';
-        const filePath = path.join(dirPath, 'sortedData.jsonl');
+        const filePath = path.join(dirPath, 'sortedData2.jsonl');
 
-        // Check if the directory exists, if not create it
         if (!fs.existsSync(dirPath)){
             fs.mkdirSync(dirPath, { recursive: true });
         }
 
         const fileStream = fs.createWriteStream(filePath);
-        dataObjects.forEach(dataObject => {
-            fileStream.write(JSON.stringify(dataObject) + '\n');
+        dataObjects.forEach((dataObject, index) => {
+            // Including indexNum property
+            const enhancedDataObject = {...dataObject, indexNum: index + 1}; // Assuming index starts at 1
+            fileStream.write(JSON.stringify(enhancedDataObject) + '\n');
         });
 
         fileStream.end();
@@ -184,6 +184,7 @@ const saveSortedDataToJsonl = async (dataObjects) => {
         fileStream.on('error', (error) => reject(error));
     });
 };
+
 
 // Main function to orchestrate the data processing
 export const loadCsvData = async () => {

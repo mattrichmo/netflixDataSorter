@@ -6,7 +6,6 @@ import levenshtein from 'js-levenshtein';
 import readline from 'readline';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
-import { fileURLToPath } from 'url';
 
 
 let dataObject = {
@@ -95,34 +94,6 @@ let dataObject = {
     },
 };
 
-const loadData = (filePath) => {
-    return new Promise((resolve, reject) => {
-        const dataObjects = [];
-        const readStream = fs.createReadStream(filePath, 'utf-8');
-        const lineReader = readline.createInterface({
-            input: readStream,
-            crlfDelay: Infinity
-        });
-
-        lineReader.on('line', (line) => {
-            if (line.trim() !== '') {
-                try {
-                    dataObjects.push(JSON.parse(line));
-                } catch (error) {
-                    console.error(`Error parsing line: ${error}`);
-                }
-            }
-        });
-
-        lineReader.on('close', () => {
-            resolve(dataObjects);
-        });
-
-        lineReader.on('error', (error) => {
-            reject(error);
-        });
-    });
-};
 
 
 
@@ -190,7 +161,6 @@ const calculateMatchConfidence = (title1, title2) => {
 
 
 //Imdb Scraping Functions
-
 function parseCreditInfo(creditString, defaultRole = '') {
     const regex = /^(.*?)(?:\s*\((\d+)\s*episodes\))?(?:\s*(\d{4})-(\d{4}|\s*))?$/;
     const match = regex.exec(creditString);
@@ -353,21 +323,31 @@ const fetchInfoIMDB = async (query, index) => {
         const matchConfidence = calculateMatchConfidence(query, matchedTitle);
         let confidenceColor = matchConfidence < 50 ? chalk.red : matchConfidence < 90 ? chalk.yellow : chalk.green;
 
-        let generalInfoData = {};
-        let castCrewData = {};
-        
-        // Only proceed with fetching general info and cast & crew if match confidence is over 70%
-        if (matchConfidence > 70) {
-            generalInfoData = await getImdbGeneralInfo(matchedTitle, imdbLink);
-            castCrewData = await getCastCrew(imdbLink, matchedTitle);
-        }
-
         console.log(chalk.dim(`\n-----`));
         console.log(chalk.magenta(`Query: ${query}`));
         console.log(chalk.green(`Matched Title: ${matchedTitle}`));
         console.log(chalk.green(`Release Dates: ${releaseDate}`));
         console.log(chalk.green(`Type: ${type}`));
         console.log(confidenceColor(`Match Confidence: ${matchConfidence}%`));
+
+        // Initialize general info and cast & crew data based on match confidence
+        let generalInfoData = matchConfidence > 70 ? await getImdbGeneralInfo(matchedTitle, imdbLink) : {};
+        let castCrewData = matchConfidence > 70 ? await getCastCrew(imdbLink, matchedTitle) : {};
+
+        if (matchConfidence <= 70) {
+            console.log(chalk.red('Match confidence low. Skipping additional scraping.'));
+            // Set properties explicitly to null or empty as per requirement
+            generalInfoData = {
+                title: '',
+                genres: [],
+                length: '',
+                cover: '',
+                imdbRating: '',
+                numRatings: 0,
+                outOf: 0
+            };
+            castCrewData = null; // Or {} if you prefer to keep it as an empty object
+        }
 
         return {
             status: 'success',
@@ -377,12 +357,11 @@ const fetchInfoIMDB = async (query, index) => {
                 imdbLink: imdbLink,
                 details: {
                     title: generalInfoData.title || '',
-                    description: '', // Populate as necessary
+                    description: '', // Assuming this should also be set to an empty state
                     genres: generalInfoData.genres || [],
                     length: generalInfoData.length || '',
                     dates: dates,
-                    contentRating: {
-                    },
+                    contentRating: {},
                     cover: generalInfoData.cover || '',
                     userRating: {
                         rating: generalInfoData.imdbRating || '',
@@ -390,7 +369,7 @@ const fetchInfoIMDB = async (query, index) => {
                         outOf: generalInfoData.outOf || 0
                     },
                 },
-                castCrew: castCrewData
+                castCrew: castCrewData // This will be null if confidence is low
             },
             index,
             query
@@ -404,24 +383,42 @@ const fetchInfoIMDB = async (query, index) => {
 
 
 
+
 //Helper Processing Functions
-const getLastScrapedIndex = async () => {
+const getLastScrapedItem = async () => {
     const scrapedManifestFilePath = './data/manifest/scrapedManifest.jsonl';
+    const sortedDataFilePath = './data/processed/sortedData.jsonl';
     let lastScrapedIndex = -1;
+    let highestIndexEntry = null;
 
     try {
-        // Create the directory path if it doesn't exist
-        const dirPath = path.dirname(scrapedManifestFilePath);
-        if (!fs.existsSync(dirPath)) {
-            fs.mkdirSync(dirPath, { recursive: true });
+        if (fs.existsSync(scrapedManifestFilePath)) {
+            // Read and find the highest index entry in the manifest
+            const manifestData = fs.readFileSync(scrapedManifestFilePath, 'utf-8').trim().split('\n').map(line => JSON.parse(line));
+            highestIndexEntry = manifestData.reduce((acc, curr) => {
+                return (acc.index > curr.index) ? acc : curr;
+            }, {index: -1});
         }
 
-        if (fs.existsSync(scrapedManifestFilePath)) {
-            const manifestData = fs.readFileSync(scrapedManifestFilePath, 'utf-8').trim().split('\n');
-            lastScrapedIndex = manifestData.length - 1; // Use the total number of items as the last index
+        if (highestIndexEntry) {
+            // Find the corresponding entry in the sorted data
+            const readStream = fs.createReadStream(sortedDataFilePath, 'utf-8');
+            const lineReader = readline.createInterface({
+                input: readStream,
+                crlfDelay: Infinity
+            });
+            let currentIndex = 0;
+            for await (const line of lineReader) {
+                const dataObject = JSON.parse(line);
+                if (dataObject.coreTitle === highestIndexEntry.coreTitle) {
+                    lastScrapedIndex = currentIndex;
+                    break;
+                }
+                currentIndex++;
+            }
         }
     } catch (error) {
-        console.error(chalk.red(`Error reading the last scraped index from manifest: ${error}`));
+        console.error(chalk.red(`Error finding the last scraped index: ${error}`));
     }
 
     return lastScrapedIndex;
@@ -462,9 +459,9 @@ const handleImdbResult = async (item, imdbResult, currentItemIndex, outputStream
         errorOutputStream.write(JSON.stringify({ index: currentItemIndex, query: item.meta.coreTitle, status: imdbResult.status, message: imdbResult.message }) + '\n');
     }
 };
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-const initializeFilePathsAndPrepareFileSystem = async () => {
+
+const initFIlePaths = async () => {
     // Define all the necessary file paths
     const paths = {
         outputFilePath: './data/processed/scrapedData.jsonl',
@@ -475,11 +472,12 @@ const initializeFilePathsAndPrepareFileSystem = async () => {
     };
 
     // Ensure all required directories and files are prepared
-    await ensureFileSystemPrepared(Object.values(paths));
+    await checkFileSystems(Object.values(paths));
 
     return paths;
 };
-const ensureFileSystemPrepared = async (filePaths) => {
+
+const checkFileSystems = async (filePaths) => {
     filePaths.forEach(filePath => {
         const dirPath = path.dirname(filePath);
         if (!fs.existsSync(dirPath)) {
@@ -495,83 +493,73 @@ const ensureFileSystemPrepared = async (filePaths) => {
     });
 };
 
-//Main Processing Functions
-const processBatch = async (batch, index, outputStream, lowConfidenceOutputStream, errorOutputStream, minOutputStream, scrapedManifestFilePath) => {
-    const retryDelay = 5000; // Delay for retry
-    const maxRetries = 3; // Maximum number of retries
-    // Initial processing of all items in the batch in parallel
-    const results = await Promise.all(batch.map(async (item, batchIndex) => {
-        const currentItemIndex = index + batchIndex;
-        console.log(chalk.dim(`Processing item ${currentItemIndex}`));
-
-        if (!item.meta || !item.meta.coreTitle) {
-            console.error(`Missing coreTitle for item at index ${currentItemIndex}`);
-            return { status: 'error', message: 'Missing coreTitle', index: currentItemIndex, retryable: false };
-        }
-
-        return fetchInfoIMDB(item.meta.coreTitle, currentItemIndex);
-    }));
-
-    // Process items that need retrying
-    let retryItems = [];
-    for (const result of results) {
-        if (result.retryable && result.retryCount < maxRetries) {
-            retryItems.push(batch[result.index - index]);
-        } else {
-            handleImdbResult(batch[result.index - index], result, result.index, outputStream, lowConfidenceOutputStream, errorOutputStream, minOutputStream, scrapedManifestFilePath);
-                }
-    }
-
-    // Retry failed items
-    for (let retryCount = 0; retryCount < maxRetries; retryCount++) {
-        if (retryItems.length === 0) {
-            break; // No more items to retry
-        }
-
-        console.log(chalk.yellow(`Retrying ${retryItems.length} items. Retry attempt ${retryCount + 1}`));
-        await sleep(retryDelay); // Delay before retrying
-
-        const retryResults = await Promise.all(retryItems.map(async (item) => {
-            const currentItemIndex = item.index;
-            return fetchInfoIMDB(item.meta.coreTitle, currentItemIndex, retryCount + 1);
-        }));
-
-        retryItems = []; // Reset for next round of retries
-        for (const result of retryResults) {
-            if (result.retryable && result.retryCount < maxRetries) {
-                retryItems.push(batch[result.index - index]);
-            } else {
-                handleImdbResult(batch[result.index - index], result, result.index, outputStream, lowConfidenceOutputStream, errorOutputStream, minOutputStream, scrapedManifestFilePath);
-                        }
-        }
-    }
-
-    // Handle items that exceeded retry attempts
-    for (const item of retryItems) {
-        errorOutputStream.write(JSON.stringify({ index: item.index, query: item.meta.coreTitle, status: 'error', message: 'Exceeded retry attempts' }) + '\n');
-    }
-};
-
-const processFirstPass = async (devMode = false) => {
-    // Initialize file paths and ensure filesystem is prepared
-    const {
-        outputFilePath,
-        lowConfidenceFilePath,
-        errorFilePath,
-        minOutputFilePath,
-        scrapedManifestFilePath
-    } = await initializeFilePathsAndPrepareFileSystem();
-
-    const startIndex = await getLastScrapedIndex() + 1;
+async function initializeProcessingEnvironment() {
+    const filePaths = await initFilePaths();
+    const startIndex = await getLastScrapedItem() + 1;
     console.log(chalk.blue(`Starting processing from index: ${startIndex}`));
+    
+    const streams = {
+        outputStream: fs.createWriteStream(filePaths.outputFilePath, { flags: 'a' }),
+        lowConfidenceOutputStream: fs.createWriteStream(filePaths.lowConfidenceFilePath, { flags: 'a' }),
+        errorOutputStream: fs.createWriteStream(filePaths.errorFilePath, { flags: 'a' }),
+        minOutputStream: fs.createWriteStream(filePaths.minOutputFilePath, { flags: 'a' })
+    };
+    
+    return { ...filePaths, startIndex, ...streams };
+}
 
-    const batchSize = 5;
 
-    const outputStream = fs.createWriteStream(outputFilePath, { flags: 'a' });
-    const lowConfidenceOutputStream = fs.createWriteStream(lowConfidenceFilePath, { flags: 'a' });
-    const errorOutputStream = fs.createWriteStream(errorFilePath, { flags: 'a' });
-    const minOutputStream = fs.createWriteStream(minOutputFilePath, { flags: 'a' });
+async function processItem(item, currentIndex, outputStream, lowConfidenceOutputStream, errorOutputStream, minOutputStream, scrapedManifestFilePath, retryDelay = 5000, maxRetries = 3) {
+    let retryCount = 0;
+    let result;
 
+    while (retryCount <= maxRetries) {
+        if (!item.meta || !item.meta.coreTitle) {
+            console.error(`Missing coreTitle for item at index ${currentIndex}`);
+            return { status: 'error', message: 'Missing coreTitle', index: currentIndex, retryable: false };
+        }
+
+        result = await fetchInfoIMDB(item.meta.coreTitle, currentIndex, retryCount);
+
+        if (result.retryable && retryCount < maxRetries) {
+            console.log(chalk.yellow(`Retrying item at index ${currentIndex}. Retry attempt ${retryCount + 1}`));
+            await sleep(retryDelay); // Wait before retrying
+            retryCount++;
+        } else {
+            break; // Exit the loop if not retryable or max retries reached
+        }
+    }
+
+    // Handle the final result after all retries
+    if (result.retryable && retryCount === maxRetries) {
+        // Log as error if still retryable after max retries
+        errorOutputStream.write(JSON.stringify({ index: currentIndex, query: item.meta.coreTitle, status: 'error', message: 'Exceeded retry attempts' }) + '\n');
+    } else {
+        // Handle the result based on the outcome
+        handleImdbResult(item, result, currentIndex, outputStream, lowConfidenceOutputStream, errorOutputStream, minOutputStream, scrapedManifestFilePath);
+    }
+}
+async function processBatch(batch, index, outputStream, lowConfidenceOutputStream, errorOutputStream, minOutputStream, scrapedManifestFilePath) {
+    // Process all items in the batch with parallel promises
+    const processingPromises = batch.map((item, batchIndex) => {
+        const currentItemIndex = index + batchIndex;
+        return processItem(item, currentItemIndex, outputStream, lowConfidenceOutputStream, errorOutputStream, minOutputStream, scrapedManifestFilePath);
+    });
+
+    await Promise.all(processingPromises);
+}
+
+const processAllBatches = async () => {
+    const {
+        startIndex,
+        outputStream,
+        lowConfidenceOutputStream,
+        errorOutputStream,
+        minOutputStream,
+        scrapedManifestFilePath
+    } = await initializeProcessingEnvironment();
+
+    const batchSize = 1;
     let shouldDelay = false;
     let currentIndex = startIndex;
     let batch = [];
@@ -589,38 +577,30 @@ const processFirstPass = async (devMode = false) => {
                     const dataObject = JSON.parse(line);
                     batch.push(dataObject);
 
-                    if (batch.length === batchSize || devMode) {
+                    if (batch.length === batchSize) {
                         if (shouldDelay) {
                             console.log(chalk.red('Received 403 response. Waiting for 30 seconds before the next batch.'));
                             await sleep(20000);
                             shouldDelay = false;
                         }
 
-                        // Process the current batch
                         await processBatch(batch, currentIndex, outputStream, lowConfidenceOutputStream, errorOutputStream, minOutputStream, scrapedManifestFilePath);
 
-                        // Wait for 1 to 3 seconds randomly after each batch
                         const waitTime = Math.random() * (2000 - 1000) + 1000;
                         console.log(chalk.blue(`Waiting ${waitTime / 1000} seconds before running next batch ->`));
                         await sleep(waitTime);
 
-                        currentIndex += batch.length; // Update currentIndex after processing each batch
-                        batch = []; // Clear the batch for the next set of items
+                        currentIndex += batch.length; 
+                        batch = []; 
                     }
                 } catch (error) {
                     console.error(chalk.red(`Error parsing line: ${error}`));
                 }
             }
         } else {
-            currentIndex++; // Increment currentIndex if not processing yet
-        }
-
-        if (devMode && currentIndex - startIndex >= 10) {
-            break; // In dev mode, process only 10 items
+            currentIndex++; 
         }
     }
-
-    // Process any remaining items in the last batch
     if (batch.length > 0) {
         await processBatch(batch, currentIndex, outputStream, lowConfidenceOutputStream, errorOutputStream, minOutputStream, scrapedManifestFilePath);
     }
@@ -628,15 +608,16 @@ const processFirstPass = async (devMode = false) => {
     outputStream.end();
     lowConfidenceOutputStream.end();
     errorOutputStream.end();
-    minOutputStream.end(); // Ensure to close the new stream as well
+    minOutputStream.end();
 
     console.log(chalk.green('Processing complete.'));
 };
 
 
 
+
 export const main = async () => {
-    await processFirstPass();
+    await processAllBatches();
 };
 
 main();
