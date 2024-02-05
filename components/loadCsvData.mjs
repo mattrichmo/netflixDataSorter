@@ -54,37 +54,39 @@ const extractSeasonNumber = (title) => {
 };
 
 // Function to parse CSV row into JSON object
-const parseCSVRow = (row) => {
-    const coreTitle = extractCoreTitle(row.Title || '');
-    const secondaryLanguageTitle = extractSecondaryLanguageTitle(row.Title || ''); // Extract secondary language title
+const parseCSVRow = (row, indexNum) => {
+    const rawTitle = row.Title || '';
+    const cleanTitleValue = cleanTitle(rawTitle); // Adjusted according to new requirements
+    const coreTitleValue = extractCoreTitle(rawTitle); // Adjusted according to new requirements
     const hoursWatched = parseFloat(row['Hours Viewed'].replace(/,/g, '')) || 0;
     const availableGlobally = row['Available Globally?'].toLowerCase() === 'yes';
     const releaseDate = row['Release Date'] || '';
 
     return {
         meta: {
-            contentUUID: uuidv4(),
-            coreTitle: coreTitle, // Only coreTitle is retained
-            secondaryLanguageTitle: secondaryLanguageTitle, // Secondary language title
+            parentUUID: uuidv4(),
+            rawTitle: rawTitle,
+            cleanTitle: cleanTitleValue,
+            coreTitle: coreTitleValue,
+            indexNum: indexNum, // Set the index number here
         },
         data: {
             totals: {
-                seasonsInNetflixData: 0, // To be computed
+                seasonsInNetflixData: 1, // Initialized as 1; will be adjusted in `organizeObjects`
                 totalHoursWatched: hoursWatched,
             },
             relationships: [{
                 itemUUID: uuidv4(),
-                title: row.Title || '',
+                title: rawTitle,
                 availableGlobally: availableGlobally,
                 hoursWatched: hoursWatched,
                 releaseDate: releaseDate,
             }],
-            sources: {
-                
-            }
+            sources: {} // Placeholder for potential future data
         }
     };
 };
+
 
 // Function to establish relationships between items with matching coreTitle
 const createRelationships = (allContentData) => {
@@ -144,12 +146,14 @@ const organizeObjects = (parsedObjects) => {
 // Function to load CSV data, process, and organize
 const cleanAndSortData = async () => {
     const results = [];
+    let indexNum = 0; // Start indexNum at 0 for the first row
 
     return new Promise((resolve, reject) => {
         fs.createReadStream('../data/raw/netflixData.csv')
             .pipe(csv())
             .on('data', (data) => {
-                results.push(parseCSVRow(data));
+                // Pass the current indexNum to parseCSVRow, then increment it for the next row
+                results.push(parseCSVRow(data, indexNum++)); // Increment after pushing to ensure it starts at 0
             })
             .on('end', () => {
                 createRelationships(results);
@@ -162,11 +166,13 @@ const cleanAndSortData = async () => {
     });
 };
 
+
+
 // Function to save data objects to a JSONL file
 const saveSortedDataToJsonl = async (dataObjects) => {
     return new Promise((resolve, reject) => {
         const dirPath = '../data/processed';
-        const filePath = path.join(dirPath, 'sortedData2.jsonl');
+        const filePath = path.join(dirPath, 'sortedData.jsonl'); // Ensure the file name matches your requirements
 
         if (!fs.existsSync(dirPath)){
             fs.mkdirSync(dirPath, { recursive: true });
@@ -174,8 +180,14 @@ const saveSortedDataToJsonl = async (dataObjects) => {
 
         const fileStream = fs.createWriteStream(filePath);
         dataObjects.forEach((dataObject, index) => {
-            // Including indexNum property
-            const enhancedDataObject = {...dataObject, indexNum: index + 1}; // Assuming index starts at 1
+            // Correctly amend indexNum in the meta object for each dataObject
+            const enhancedDataObject = {
+                ...dataObject,
+                meta: {
+                    ...dataObject.meta,
+                    indexNum: index // Set indexNum starting at 0 for each item
+                }
+            };
             fileStream.write(JSON.stringify(enhancedDataObject) + '\n');
         });
 
@@ -184,6 +196,7 @@ const saveSortedDataToJsonl = async (dataObjects) => {
         fileStream.on('error', (error) => reject(error));
     });
 };
+
 
 
 // Main function to orchestrate the data processing
