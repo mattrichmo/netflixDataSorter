@@ -57,6 +57,9 @@ const parseReleaseDate = (releaseDate) => {
         };
     }
 };
+
+
+
 //helper function to calculate match confidence using levenshtein distance
 const calculateMatchConfidence = (title1, title2) => {
     // Remove any content in brackets and trim both titles
@@ -71,26 +74,6 @@ const calculateMatchConfidence = (title1, title2) => {
     return ((1 - distance / maxLength) * 100).toFixed(2);
 };
 
-//Imdb Scraping Functions
-function parseCreditInfo(creditString, defaultRole = '') {
-    const regex = /^(.*?)(?:\s*\((\d+)\s*episodes\))?(?:\s*(\d{4})-(\d{4}|\s*))?$/;
-    const match = regex.exec(creditString);
-    const role = match[1] || defaultRole;
-    const numEpisodes = match[2] || '';
-    const dateStart = match[3] || '';
-    const dateEnd = match[4] || '';
-    const numYears = dateEnd ? (parseInt(dateEnd) - parseInt(dateStart)).toString() : '';
-
-    return {
-        role,
-        numEpisodes,
-        date: {
-            dateStart,
-            dateEnd,
-            numYears
-        }
-    };
-};
 const getImdbGeneralInfo = async (imdbLink) => {
     const headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -159,7 +142,6 @@ const getImdbGeneralInfo = async (imdbLink) => {
 
     return attemptRequest();
 };
-
 const getCastCrew = async (imdbLink) => {
     const fullCreditsUrl = imdbLink + 'fullcredits';
     const headers = {
@@ -172,48 +154,114 @@ const getCastCrew = async (imdbLink) => {
             const creditsHtml = creditsResponse.data;
             const $ = cheerio.load(creditsHtml);
 
-            let castCrew = {
-                producers: [],
-                directors: [],
-                writers: [],
-                actors: [],
-                crew: []
-            };
+            let castCrew = {};
 
-            const categories = ['directors', 'writers', 'actors', 'producers', 'crew'];
-            const selectors = ['table:nth-of-type(1) tr', 'table:nth-of-type(2) tr', '.cast_list tr', 'table:nth-of-type(4) tr', 'table:nth-of-type(n+5) tr'];
+            $('h4.dataHeaderWithBorder').each((i, elem) => {
+                const category = $(elem).attr('name');
+                let people = [];
+                const nextTable = $(elem).next('table');
 
-            categories.forEach((category, index) => {
-                $(selectors[index]).each((i, elem) => {
-                    const nameSelector = $(elem).find('td.name a');
-                    const name = nameSelector.length > 0 ? nameSelector.text().trim() : 'N/A';
-                    const link = nameSelector.length > 0 ? `https://www.imdb.com${nameSelector.attr('href')}` : 'N/A';
-                    const creditDetailsSelector = $(elem).find('td.credit');
-                    const creditDetails = creditDetailsSelector.length > 0 ? creditDetailsSelector.text().trim() : 'N/A';
-                    
-                    if (name !== 'N/A') {
-                        const parsedData = parseCreditInfo(creditDetails, categories[index]);
-                        castCrew[category].push({ uuid: uuidv4(), name, imdbLink: link, ...parsedData });
-                    }
-                });
+                if (category === 'cast') {
+                    nextTable.find('tbody > tr').each((i, elem) => {
+                        if (!$(elem).find('td[colspan]').length) { // Check for valid cast entry
+                            const actorData = processCastMember($(elem));
+                            if (actorData) people.push(actorData);
+                        }
+                    });
+                } else {
+                    nextTable.find('tbody > tr').each((i, elem) => {
+                        const crewData = processCrewMember($(elem));
+                        if (crewData) people.push(crewData);
+                    });
+                }
+
+                castCrew[category] = people;
             });
 
             return castCrew;
         } catch (error) {
-            if (error.code === 'ECONNRESET') {
-                console.log('Socket hang up - trying again');
-                await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for 1 second
-                return attemptRequest(); // Try again
-            } else {
-                console.error('Error scraping IMDb cast and crew data:', error);
-                return null;
-            }
+            console.error('Error scraping IMDb cast and crew data:', error);
+            return null;
         }
     };
 
+    function cleanText(text) {
+        return text.replace(/[/\\]/g, '') // Remove slashes and backslashes
+                   .replace(/\s+/g, ' ') // Replace multiple whitespace characters with a single space
+                   .trim(); // Trim leading and trailing whitespace
+    }
+
+    function parseCredits(creditsString, isCast = false) {
+        let credits = {
+            credit: isCast ? 'cast' : '',
+            numEpisodes: 0,
+            years: ''
+        };
+    
+        if (isCast) {
+            // Adjusted to account for "1 episode, 2023" or "72 episodes, 2014-2019"
+            const castMatch = creditsString.match(/(\d+)\s+episode[s]?,\s+(\d{4})(?:-(\d{4}))?/);
+            if (castMatch) {
+                credits.numEpisodes = parseInt(castMatch[1], 10);
+                credits.years = castMatch[3] ? `${castMatch[2]}-${castMatch[3]}` : `${castMatch[2]}`;
+            }
+        } else {
+            // Splitting on parentheses to handle multiple roles or notes within the credits
+            const parts = creditsString.split(/\)\s*\(/);
+    
+            if (parts.length > 1) {
+                credits.credit = cleanText(parts[0].replace(/^\(/, ''));
+                const episodesPart = parts[parts.length - 1]; // Assuming the last part contains episode info
+                const crewMatch = episodesPart.match(/(\d+)\s+episode[s]?,\s+(\d{4})(?:-(\d{4}))?\)?/);
+                if (crewMatch) {
+                    credits.numEpisodes = parseInt(crewMatch[1], 10);
+                    credits.years = crewMatch[3] ? `${crewMatch[2]}-${crewMatch[3]}` : `${crewMatch[2]}`;
+                }
+            } else {
+                // For a single set of details without multiple roles
+                const singleMatch = creditsString.match(/(\d+)\s+episode[s]?,\s+(\d{4})(?:-(\d{4}))?/);
+                if (singleMatch) {
+                    credits.credit = cleanText(creditsString.split('(')[0]);
+                    credits.numEpisodes = parseInt(singleMatch[1], 10);
+                    credits.years = singleMatch[3] ? `${singleMatch[2]}-${singleMatch[3]}` : `${singleMatch[2]}`;
+                }
+            }
+        }
+    
+        return credits;
+    }
+    
+
+    function processCastMember(row) {
+        const nameElem = row.find('td:not(.primary_photo) a').first();
+        if (!nameElem.length) return null;
+    
+        const name = nameElem.text().trim();
+        let link = `https://www.imdb.com${nameElem.attr('href')}`.split('?')[0];
+        const characterElem = row.find('td.character').last();
+        const character = characterElem.find('a').first().text().trim();
+        const creditsString = characterElem.find('a.toggle-episodes').text().trim();
+        const credits = parseCredits(cleanText(creditsString), true);
+    
+        return { uuid: uuidv4(), name, imdbLink: link, character, credits };
+    }
+    
+    
+     
+    function processCrewMember(row) {
+        const nameElem = row.find('td.name a');
+        if (!nameElem.length) return null;
+    
+        const name = nameElem.text().trim();
+        let link = `https://www.imdb.com${nameElem.attr('href')}`.split('?')[0];
+        const creditsString = row.find('td.credit').text().trim();
+        const credits = parseCredits(cleanText(creditsString));
+    
+        return { uuid: uuidv4(), name, imdbLink: link, credits };
+    }
+
     return attemptRequest();
 };
-
 
 const searchImdb = async (query) => {
     const headers = {
