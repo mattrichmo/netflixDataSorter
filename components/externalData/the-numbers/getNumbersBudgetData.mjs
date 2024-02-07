@@ -8,7 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 
 const baseUrl = `https://www.the-numbers.com/movie/budgets/all`;
-const outputFilePath = `./data/the-numbers/the-numbers-budget-data.jsonl`;
+const outputFilePath = `../data/the-numbers/the-numbers-budget-data.jsonl`;
 
 // Ensure the output directory exists
 const outputDir = path.dirname(outputFilePath);

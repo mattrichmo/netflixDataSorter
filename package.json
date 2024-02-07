@@ -1,7 +1,9 @@
 {
   "dependencies": {
     "csv-parser": "^3.0.0",
+    "csv-writer": "^1.6.0",
     "js-levenshtein": "^1.1.6",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "xlsx": "^0.18.5"
   }
 }
